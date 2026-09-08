@@ -1,0 +1,146 @@
+name: Windows RDP via Tailscale
+
+on:
+  workflow_dispatch:
+
+jobs:
+  rdp:
+    runs-on: windows-latest
+    timeout-minutes: 350
+
+    steps:
+      # -------------------------------------------------------
+      # 1. Connect GitHub Windows runner to Tailscale
+      # -------------------------------------------------------
+      - name: Connect to Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+
+      # -------------------------------------------------------
+      # 2. Configure Windows Remote Desktop
+      # -------------------------------------------------------
+      - name: Enable Remote Desktop
+        shell: powershell
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
+        run: |
+          Write-Host "Enabling Remote Desktop..."
+
+          # Enable Remote Desktop
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server" `
+            -Name "fDenyTSConnections" `
+            -Value 0
+
+          # Enable Network Level Authentication
+          Set-ItemProperty `
+            -Path "HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp" `
+            -Name "UserAuthentication" `
+            -Value 1
+
+          # Enable Windows Firewall rules for RDP
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          # Set password for GitHub runner account
+          net user runneradmin "$env:RDP_PASSWORD"
+
+          Write-Host "RDP successfully enabled."
+
+      # -------------------------------------------------------
+      # 3. Get Tailscale IP
+      # -------------------------------------------------------
+      - name: Get Tailscale IP
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================="
+          Write-Host "       WINDOWS RDP INFORMATION"
+          Write-Host "========================================="
+
+          $tsIP = tailscale ip -4
+
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned."
+              exit 1
+          }
+
+          Write-Host ""
+          Write-Host "Tailscale IP : $tsIP"
+          Write-Host "Username     : runneradmin"
+          Write-Host "Password     : Stored in RDP_PASSWORD secret"
+          Write-Host "RDP Port     : 3389"
+          Write-Host ""
+          Write-Host "========================================="
+
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      # -------------------------------------------------------
+      # 4. Verify RDP
+      # -------------------------------------------------------
+      - name: Verify RDP
+        shell: powershell
+        run: |
+          Write-Host "Checking Remote Desktop service..."
+
+          $service = Get-Service TermService
+
+          if ($service.Status -ne "Running") {
+              Start-Service TermService
+          }
+
+          Get-Service TermService
+
+          Write-Host ""
+          Write-Host "Checking port 3389..."
+
+          $result = Test-NetConnection `
+            -ComputerName localhost `
+            -Port 3389
+
+          if (-not $result.TcpTestSucceeded) {
+              Write-Error "RDP port 3389 is not responding."
+              exit 1
+          }
+
+          Write-Host "RDP is ready."
+
+      # -------------------------------------------------------
+      # 5. Display connection details
+      # -------------------------------------------------------
+      - name: Connection Information
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "=========================================="
+          Write-Host "        RDP SERVER IS READY"
+          Write-Host "=========================================="
+          Write-Host ""
+          Write-Host "Address  : $env:TAILSCALE_IP"
+          Write-Host "Username : runneradmin"
+          Write-Host "Port     : 3389"
+          Write-Host ""
+          Write-Host "Open Windows Remote Desktop:"
+          Write-Host ""
+          Write-Host "mstsc"
+          Write-Host ""
+          Write-Host "Then enter:"
+          Write-Host "$env:TAILSCALE_IP"
+          Write-Host ""
+          Write-Host "=========================================="
+
+      # -------------------------------------------------------
+      # 6. Keep GitHub runner alive
+      # -------------------------------------------------------
+      - name: Keep RDP Session Alive
+        shell: powershell
+        run: |
+          Write-Host "RDP session active."
+          Write-Host "Cancel the GitHub Action when finished."
+
+          while ($true) {
+              Write-Host "$(Get-Date) - RDP active at $env:TAILSCALE_IP"
+              Start-Sleep -Seconds 300
+          }
